@@ -277,23 +277,24 @@ public:
 
         vector<pair<Team*, char>> unfreeze_order;
 
-        // Save original state before we start unfreezing
+        // Save complete original state before any changes
         struct SavedState {
             bool frozen;
             bool solved_before_freeze;
             int wrong_attempts_before;
             int submissions_after;
         };
-        vector<vector<SavedState>> saved(all_teams.size());
+        vector<vector<SavedState>> original(all_teams.size());
         for (int i = 0; i < (int)all_teams.size(); i++) {
             Team *team = all_teams[i];
             for (auto &[p, state] : team->problems) {
-                saved[i].push_back({state.frozen, state.solved_before_freeze, state.wrong_attempts_before, state.submissions_after});
+                original[i].push_back({state.frozen, state.solved_before_freeze, state.wrong_attempts_before, state.submissions_after});
             }
         }
 
         // Collect all frozen problems in the order of scrolling - determine unfreeze order by repeatedly
         // finding lowest-ranked team and unfreezing its smallest frozen problem until none left
+        // This gives us the correct order according to the problem statement
         while (true) {
             bool found = false;
             Team *lowest_team = nullptr;
@@ -318,19 +319,21 @@ public:
             recomputeRanking();
         }
 
-        // Restore everything back to original frozen state for incremental processing
+        // Restore everything back to the original state before we started collecting the order
         for (int i = 0; i < (int)all_teams.size(); i++) {
             Team *team = all_teams[i];
             int j = 0;
             for (auto &[p, state] : team->problems) {
-                SavedState &sv = saved[i][j];
-                state.frozen = sv.frozen;
-                state.solved_before_freeze = sv.solved_before_freeze;
-                state.wrong_attempts_before = sv.wrong_attempts_before;
-                state.submissions_after = sv.submissions_after;
+                SavedState &orig = original[i][j];
+                state.frozen = orig.frozen;
+                state.solved_before_freeze = orig.solved_before_freeze;
+                state.wrong_attempts_before = orig.wrong_attempts_before;
+                state.submissions_after = orig.submissions_after;
                 j++;
             }
         }
+
+        // Apply the first 0 steps to get starting ranking
         recomputeRanking();
 
         // Build position map for quick lookup
@@ -344,8 +347,15 @@ public:
         for (auto &[team, p] : unfreeze_order) {
             int old_pos = pos_map[team];
 
-            // Unfreeze this problem and recompute only this team's stats
+            // Unfreeze this problem and process it
             team->problems[p].frozen = false;
+            ProblemState &ps = team->problems[p];
+            if (ps.solved && !ps.solved_before_freeze) {
+                ps.wrong_attempts_before += ps.submissions_after;
+                ps.solved_before_freeze = true;
+            }
+
+            // Recompute this team's stats after unfreezing
             team->computeRankingStats();
 
             // Remove from current position
@@ -359,13 +369,16 @@ public:
 
             current_ranking.insert(current_ranking.begin() + new_pos, team);
 
-            // Update position map
+            // Update position map to reflect changes after insert
             for (int i = new_pos; i < (int)current_ranking.size(); i++) {
                 pos_map[current_ranking[i]] = i;
             }
 
+            // If ranking improved (moved up), output the change
             if (new_pos != old_pos && new_pos < old_pos) {
-                Team *overtaken = current_ranking[new_pos];
+                // The overtaken team is the one that was overtaken and is now after us
+                // It was at our new position before the move
+                Team *overtaken = current_ranking[new_pos + 1];
                 output += team->name + " " + overtaken->name + " " + to_string(team->solved_count) + " " + to_string(team->total_penalty) + "\n";
             }
         }

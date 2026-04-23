@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <cassert>
+#include <limits>
 
 using namespace std;
 
@@ -276,16 +277,23 @@ public:
 
         vector<pair<Team*, char>> unfreeze_order;
 
-        // Collect all frozen problems in order of scrolling first
-        vector<vector<bool>> was_frozen(all_teams.size());
+        // Save original state before we start unfreezing
+        struct SavedState {
+            bool frozen;
+            bool solved_before_freeze;
+            int wrong_attempts_before;
+            int submissions_after;
+        };
+        vector<vector<SavedState>> saved(all_teams.size());
         for (int i = 0; i < (int)all_teams.size(); i++) {
             Team *team = all_teams[i];
             for (auto &[p, state] : team->problems) {
-                was_frozen[i].push_back(state.frozen);
+                saved[i].push_back({state.frozen, state.solved_before_freeze, state.wrong_attempts_before, state.submissions_after});
             }
         }
 
-        // Collect all frozen problems in the order we'll unfreeze them
+        // Collect all frozen problems in the order of scrolling - determine unfreeze order by repeatedly
+        // finding lowest-ranked team and unfreezing its smallest frozen problem until none left
         while (true) {
             bool found = false;
             Team *lowest_team = nullptr;
@@ -307,14 +315,20 @@ public:
                 ps.wrong_attempts_before += ps.submissions_after;
                 ps.solved_before_freeze = true;
             }
+            recomputeRanking();
         }
 
-        // Now restore everything to frozen to do incremental changes
+        // Restore everything back to original frozen state for incremental processing
         for (int i = 0; i < (int)all_teams.size(); i++) {
             Team *team = all_teams[i];
             int j = 0;
             for (auto &[p, state] : team->problems) {
-                state.frozen = was_frozen[i][j++];
+                SavedState &sv = saved[i][j];
+                state.frozen = sv.frozen;
+                state.solved_before_freeze = sv.solved_before_freeze;
+                state.wrong_attempts_before = sv.wrong_attempts_before;
+                state.submissions_after = sv.submissions_after;
+                j++;
             }
         }
         recomputeRanking();
@@ -518,9 +532,9 @@ int main() {
             string team_name;
             cin >> team_name;
             // Read the rest of the line to parse correctly
-            string rest;
             string line;
-            cin.ignore();
+            // Ignore all characters until newline
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
             getline(cin, line);
             // Parse PROBLEM=... and STATUS=...
             string problem_filter, status_filter;

@@ -329,7 +329,7 @@ public:
                 new_pos++;
             }
             current_ranking.insert(current_ranking.begin() + new_pos, lowest_team);
-            // Update position map
+            // Update position map - only the inserted position and those after need updating
             for (int i = new_pos; i < (int)current_ranking.size(); i++) {
                 pos_map_initial[current_ranking[i]] = i;
             }
@@ -383,6 +383,13 @@ public:
                 new_pos++;
             }
 
+            // Before inserting, get the team that's at new_pos - it will be overtaken
+            Team *overtaken = nullptr;
+            bool output_change = (new_pos != old_pos && new_pos < old_pos && new_pos < (int)current_ranking.size());
+            if (output_change) {
+                overtaken = current_ranking[new_pos];
+            }
+
             current_ranking.insert(current_ranking.begin() + new_pos, team);
 
             // Update position map to reflect changes after insert
@@ -391,10 +398,8 @@ public:
             }
 
             // If ranking improved (moved up), output the change
-            if (new_pos != old_pos && new_pos < old_pos) {
-                // The overtaken team is the one that was overtaken and is now after us
-                // It was at our new position before the move
-                Team *overtaken = current_ranking[new_pos + 1];
+            // According to spec: team1 overtakes team2 which was at position before insertion
+            if (output_change) {
                 output += team->name + " " + overtaken->name + " " + to_string(team->solved_count) + " " + to_string(team->total_penalty) + "\n";
             }
         }

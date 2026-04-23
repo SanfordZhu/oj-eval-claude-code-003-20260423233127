@@ -3,9 +3,7 @@
 #include <string>
 #include <map>
 #include <unordered_map>
-#include <set>
 #include <algorithm>
-#include <memory>
 #include <cassert>
 #include <limits>
 
@@ -52,19 +50,10 @@ struct ProblemState {
     int solve_time = 0;
     bool solved_before_freeze = false;
 
-    // Does this problem count for ranking in current state?
     bool countsForRanking() const {
         if (solved_before_freeze) return true;
         if (frozen) return false;
         return solved;
-    }
-
-    int getWrongAttempts() const {
-        if (solved_before_freeze || !frozen) {
-            return wrong_attempts_before;
-        } else {
-            return wrong_attempts_before;
-        }
     }
 };
 
@@ -75,8 +64,6 @@ public:
     vector<Submission> submissions;
     int solved_count = 0;
     int total_penalty = 0;
-
-    // For ranking comparison - store sorted solve times
     vector<int> sorted_solve_times;
 
     Team(const string &n) : name(n) {}
@@ -125,8 +112,8 @@ bool compareTeams(const Team *a, const Team *b) {
     if (a->total_penalty != b->total_penalty) {
         return a->total_penalty < b->total_penalty;
     }
-    const auto &sa = a->sorted_solve_times;
-    const auto &sb = b->sorted_solve_times;
+    const vector<int> &sa = a->sorted_solve_times;
+    const vector<int> &sb = b->sorted_solve_times;
     for (size_t i = 0; i < sa.size() && i < sb.size(); i++) {
         if (sa[i] != sb[i]) {
             return sa[i] < sb[i];
@@ -212,12 +199,10 @@ public:
                 ps.solved = true;
                 ps.solve_time = time;
                 if (!is_frozen || ps.solved_before_freeze) {
-                    // already solved before freeze - stays solved
                     if (!ps.solved_before_freeze) {
                         ps.solved_before_freeze = true;
                     }
                 }
-                // else frozen - solved after freeze but doesn't count as solved_before_freeze yet
                 ranking_dirty = true;
             }
         } else {
@@ -225,7 +210,6 @@ public:
                 if (!is_frozen || ps.solved_before_freeze) {
                     ps.wrong_attempts_before++;
                 }
-                // else wrong attempts after freeze are counted in submissions_after, added when unfrozen
                 ranking_dirty = true;
             }
         }
@@ -251,9 +235,6 @@ public:
                 if (state.solved && state.countsForRanking()) {
                     state.solved_before_freeze = true;
                 }
-                // Any problem unsolved before freeze that has at least one submission after freeze gets frozen
-                // We are just starting freeze, so any existing submissions_after are zero yet
-                // The rule: problems unsolved before freeze that get submissions after freeze enter frozen state
                 if (!state.solved_before_freeze) {
                     state.submissions_after = 0;
                 }
@@ -271,35 +252,23 @@ public:
         }
         output = "[Info]Scroll scoreboard.\n";
 
-        // First flush to get ranking before scrolling
+        // First flush to get ranking before scrolling - output this
         recomputeRanking();
         output += scoreboardToString();
 
-        vector<pair<Team*, char>> unfreeze_order;
-
-        // Save complete original state before any changes - we need it at the end anyway
-        struct SavedState {
-            bool frozen;
-            bool solved_before_freeze;
-            int wrong_attempts_before;
-            int submissions_after;
-        };
-        vector<vector<SavedState>> original(all_teams.size());
-        unordered_map<Team*, int> pos_map_initial;
-        for (int i = 0; i < (int)all_teams.size(); i++) {
-            Team *team = all_teams[i];
-            pos_map_initial[team] = i;
-            for (auto &[p, state] : team->problems) {
-                original[i].push_back({state.frozen, state.solved_before_freeze, state.wrong_attempts_before, state.submissions_after});
-            }
+        // Build position map for O(1) lookup
+        unordered_map<Team*, int> pos_map;
+        for (int i = 0; i < (int)current_ranking.size(); i++) {
+            pos_map[current_ranking[i]] = i;
         }
 
-        // Collect all frozen problems in the order of scrolling - determine unfreeze order by repeatedly
-        // finding lowest-ranked team and unfreezing its smallest frozen problem until none left
-        // Use incremental update instead of full sort to be faster
+        // Follow problem statement exactly: repeat until no frozen problems left
+        // After each unfreeze, we update ranking and continue with the new ranking
         while (true) {
             bool found = false;
             Team *lowest_team = nullptr;
+
+            // Search from bottom (reverse order) to find lowest ranked
             for (auto it = current_ranking.rbegin(); it != current_ranking.rend(); ++it) {
                 Team *t = *it;
                 if (t->hasFrozenProblems()) {
@@ -311,9 +280,8 @@ public:
             if (!found) break;
 
             char p = lowest_team->getSmallestFrozenProblem();
-            unfreeze_order.emplace_back(lowest_team, p);
+            int old_pos = pos_map[lowest_team];
 
-            int old_pos = pos_map_initial[lowest_team];
             ProblemState &ps = lowest_team->problems[p];
             ps.frozen = false;
             if (ps.solved && !ps.solved_before_freeze) {
@@ -321,89 +289,40 @@ public:
                 ps.solved_before_freeze = true;
             }
 
-            // Update ranking incrementally
+            // Recompute this team's stats after unfreezing
             lowest_team->computeRankingStats();
+
+            // Remove from old position
             current_ranking.erase(current_ranking.begin() + old_pos);
+
+            // Find new position by comparing
             int new_pos = 0;
             while (new_pos < (int)current_ranking.size() && compareTeams(lowest_team, current_ranking[new_pos])) {
                 new_pos++;
             }
-            current_ranking.insert(current_ranking.begin() + new_pos, lowest_team);
-            // Update position map - only the inserted position and those after need updating
-            for (int i = new_pos; i < (int)current_ranking.size(); i++) {
-                pos_map_initial[current_ranking[i]] = i;
-            }
-        }
 
-        // Restore everything back to the original state before we started collecting the order
-        for (int i = 0; i < (int)all_teams.size(); i++) {
-            Team *team = all_teams[i];
-            int j = 0;
-            for (auto &[p, state] : team->problems) {
-                SavedState &orig = original[i][j];
-                state.frozen = orig.frozen;
-                state.solved_before_freeze = orig.solved_before_freeze;
-                state.wrong_attempts_before = orig.wrong_attempts_before;
-                state.submissions_after = orig.submissions_after;
-                j++;
-            }
-        }
-
-        // Start with original sorted ranking (before any unfreezing)
-        recomputeRanking();
-
-        // Build position map for quick lookup
-        unordered_map<Team*, int> pos_map;
-        for (int i = 0; i < (int)current_ranking.size(); i++) {
-            pos_map[current_ranking[i]] = i;
-        }
-
-        // Process each unfreeze incrementally - no full sort after each step
-        // This is much faster than full recomputation
-        for (auto &[team, p] : unfreeze_order) {
-            int old_pos = pos_map[team];
-
-            // Unfreeze this problem and process it
-            team->problems[p].frozen = false;
-            ProblemState &ps = team->problems[p];
-            if (ps.solved && !ps.solved_before_freeze) {
-                ps.wrong_attempts_before += ps.submissions_after;
-                ps.solved_before_freeze = true;
-            }
-
-            // Recompute this team's stats after unfreezing
-            team->computeRankingStats();
-
-            // Remove from current position
-            current_ranking.erase(current_ranking.begin() + old_pos);
-
-            // Find new position by comparing with other teams
-            int new_pos = 0;
-            while (new_pos < (int)current_ranking.size() && compareTeams(team, current_ranking[new_pos])) {
-                new_pos++;
-            }
-
-            // Before inserting, get the team that's at new_pos - it will be overtaken
+            // If we moved up, the overtaken team is at new_pos before insertion
             Team *overtaken = nullptr;
             bool output_change = (new_pos != old_pos && new_pos < old_pos && new_pos < (int)current_ranking.size());
             if (output_change) {
                 overtaken = current_ranking[new_pos];
             }
 
-            current_ranking.insert(current_ranking.begin() + new_pos, team);
+            // Insert at new position
+            current_ranking.insert(current_ranking.begin() + new_pos, lowest_team);
 
-            // Update position map to reflect changes after insert
+            // Update positions in map for all affected positions
             for (int i = new_pos; i < (int)current_ranking.size(); i++) {
                 pos_map[current_ranking[i]] = i;
             }
 
-            // If ranking improved (moved up), output the change
-            // According to spec: team1 overtakes team2 which was at position before insertion
+            // Output the change if ranking improved
             if (output_change) {
-                output += team->name + " " + overtaken->name + " " + to_string(team->solved_count) + " " + to_string(team->total_penalty) + "\n";
+                output += lowest_team->name + " " + overtaken->name + " " + to_string(lowest_team->solved_count) + " " + to_string(lowest_team->total_penalty) + "\n";
             }
         }
 
+        // Output final scoreboard
         ranking_dirty = false;
         output += scoreboardToString();
         is_frozen = false;
@@ -567,10 +486,8 @@ int main() {
             cin >> team_name;
             // Read the rest of the line to parse correctly
             string line;
-            // Ignore all characters until newline
             cin.ignore(numeric_limits<streamsize>::max(), '\n');
             getline(cin, line);
-            // Parse PROBLEM=... and STATUS=...
             string problem_filter, status_filter;
             size_t problem_pos = line.find("PROBLEM=");
             size_t status_pos = line.find("STATUS=");
@@ -585,18 +502,20 @@ int main() {
             }
             if (status_pos != string::npos) {
                 status_pos += 7;
-                status_filter = line.substr(status_pos);
-                size_t end_status = status_filter.find(' ');
-                if (end_status != string::npos) {
-                    status_filter = status_filter.substr(0, end_status);
+                size_t end_status = line.find(' ', status_pos);
+                if (end_status == string::npos) {
+                    status_filter = line.substr(status_pos);
+                } else {
+                    status_filter = line.substr(status_pos, end_status - status_pos);
+                }
+            }
+            if (problem_filter.empty() || status_filter.empty()) {
+                if (problem_filter.empty() && problem_pos != string::npos) {
+                    // handle case where split differently
                 }
             }
             if (problem_filter == "ALL" && status_filter.empty()) {
-                // Sometimes order reversed
-                problem_filter.clear();
-                status_filter.clear();
                 size_t status_pos2 = line.find("STATUS=");
-                size_t problem_pos2 = line.find("PROBLEM=");
                 if (status_pos2 != string::npos) {
                     status_pos2 += 7;
                     size_t end_status = line.find(' ', status_pos2);
@@ -604,14 +523,6 @@ int main() {
                         status_filter = line.substr(status_pos2);
                     } else {
                         status_filter = line.substr(status_pos2, end_status - status_pos2);
-                    }
-                }
-                if (problem_pos2 != string::npos) {
-                    problem_pos2 += 8;
-                    problem_filter = line.substr(problem_pos2);
-                    size_t end_problem = problem_filter.find(' ');
-                    if (end_problem != string::npos) {
-                        problem_filter = problem_filter.substr(0, end_problem);
                     }
                 }
             }

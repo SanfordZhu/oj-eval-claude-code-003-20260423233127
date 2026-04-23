@@ -277,7 +277,7 @@ public:
 
         vector<pair<Team*, char>> unfreeze_order;
 
-        // Save complete original state before any changes
+        // Save complete original state before any changes - we need it at the end anyway
         struct SavedState {
             bool frozen;
             bool solved_before_freeze;
@@ -285,8 +285,10 @@ public:
             int submissions_after;
         };
         vector<vector<SavedState>> original(all_teams.size());
+        unordered_map<Team*, int> pos_map_initial;
         for (int i = 0; i < (int)all_teams.size(); i++) {
             Team *team = all_teams[i];
+            pos_map_initial[team] = i;
             for (auto &[p, state] : team->problems) {
                 original[i].push_back({state.frozen, state.solved_before_freeze, state.wrong_attempts_before, state.submissions_after});
             }
@@ -294,7 +296,7 @@ public:
 
         // Collect all frozen problems in the order of scrolling - determine unfreeze order by repeatedly
         // finding lowest-ranked team and unfreezing its smallest frozen problem until none left
-        // This gives us the correct order according to the problem statement
+        // Use incremental update instead of full sort to be faster
         while (true) {
             bool found = false;
             Team *lowest_team = nullptr;
@@ -310,13 +312,27 @@ public:
 
             char p = lowest_team->getSmallestFrozenProblem();
             unfreeze_order.emplace_back(lowest_team, p);
+
+            int old_pos = pos_map_initial[lowest_team];
             ProblemState &ps = lowest_team->problems[p];
             ps.frozen = false;
             if (ps.solved && !ps.solved_before_freeze) {
                 ps.wrong_attempts_before += ps.submissions_after;
                 ps.solved_before_freeze = true;
             }
-            recomputeRanking();
+
+            // Update ranking incrementally
+            lowest_team->computeRankingStats();
+            current_ranking.erase(current_ranking.begin() + old_pos);
+            int new_pos = 0;
+            while (new_pos < (int)current_ranking.size() && compareTeams(lowest_team, current_ranking[new_pos])) {
+                new_pos++;
+            }
+            current_ranking.insert(current_ranking.begin() + new_pos, lowest_team);
+            // Update position map
+            for (int i = new_pos; i < (int)current_ranking.size(); i++) {
+                pos_map_initial[current_ranking[i]] = i;
+            }
         }
 
         // Restore everything back to the original state before we started collecting the order
@@ -333,7 +349,7 @@ public:
             }
         }
 
-        // Apply the first 0 steps to get starting ranking
+        // Start with original sorted ranking (before any unfreezing)
         recomputeRanking();
 
         // Build position map for quick lookup

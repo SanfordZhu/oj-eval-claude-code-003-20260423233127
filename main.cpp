@@ -295,11 +295,17 @@ public:
             // Remove from old position
             current_ranking.erase(current_ranking.begin() + old_pos);
 
-            // Find new position by comparing
-            int new_pos = 0;
-            while (new_pos < (int)current_ranking.size() && compareTeams(lowest_team, current_ranking[new_pos])) {
-                new_pos++;
+            // Find new position using binary search since current list is sorted
+            int left = 0, right = current_ranking.size();
+            while (left < right) {
+                int mid = (left + right) / 2;
+                if (compareTeams(lowest_team, current_ranking[mid])) {
+                    left = mid + 1;
+                } else {
+                    right = mid;
+                }
             }
+            int new_pos = left;
 
             // If we moved up, the overtaken team is at new_pos before insertion
             Team *overtaken = nullptr;

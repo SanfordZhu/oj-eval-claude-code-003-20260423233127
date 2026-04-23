@@ -293,13 +293,16 @@ public:
             current_ranking.erase(current_ranking.begin() + old_pos);
 
             // Find new position using binary search since current list is sorted
+            // compareTeams(a,b) is true if a should come before b (a ranks higher than b)
             int left = 0, right = current_ranking.size();
             while (left < right) {
                 int mid = (left + right) / 2;
                 if (compareTeams(lowest_team, current_ranking[mid])) {
-                    left = mid + 1;
-                } else {
+                    // lowest ranks higher than mid, so it should go before mid
                     right = mid;
+                } else {
+                    // lowest does not rank higher than mid, so it should go after mid
+                    left = mid + 1;
                 }
             }
             int new_pos = left;

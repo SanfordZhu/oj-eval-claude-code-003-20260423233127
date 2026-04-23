@@ -257,11 +257,6 @@ public:
         output += scoreboardToString();
 
         // Build position map for O(1) lookup
-        unordered_map<Team*, int> pos_map;
-        for (int i = 0; i < (int)current_ranking.size(); i++) {
-            pos_map[current_ranking[i]] = i;
-        }
-
         // Follow problem statement exactly: repeat until no frozen problems left
         // After each unfreeze, we update ranking and continue with the new ranking
         while (true) {
@@ -280,7 +275,14 @@ public:
             if (!found) break;
 
             char p = lowest_team->getSmallestFrozenProblem();
-            int old_pos = pos_map[lowest_team];
+
+            // Find old position by linear search
+            int old_pos = 0;
+            for (; old_pos < (int)current_ranking.size(); old_pos++) {
+                if (current_ranking[old_pos] == lowest_team) {
+                    break;
+                }
+            }
 
             ProblemState &ps = lowest_team->problems[p];
             ps.frozen = false;
@@ -316,11 +318,6 @@ public:
 
             // Insert at new position
             current_ranking.insert(current_ranking.begin() + new_pos, lowest_team);
-
-            // Update positions in map for all affected positions
-            for (int i = new_pos; i < (int)current_ranking.size(); i++) {
-                pos_map[current_ranking[i]] = i;
-            }
 
             // Output the change if ranking improved
             if (output_change) {

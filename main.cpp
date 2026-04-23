@@ -256,28 +256,30 @@ public:
         recomputeRanking();
         output += scoreboardToString();
 
-        // Build position map for O(1) lookup
-        // Follow problem statement exactly: repeat until no frozen problems left
-        // After each unfreeze, we update ranking and continue with the new ranking
-        while (true) {
-            bool found = false;
-            Team *lowest_team = nullptr;
+        // Collect all frozen problems grouped by team, ordered from lowest ranked to highest ranked (reverse of current ranking)
+        // This way we get lowest ranked first as required by problem statement
+        vector<pair<Team*, char>> to_unfreeze;
+        for (auto it = current_ranking.rbegin(); it != current_ranking.rend(); ++it) {
+            Team *t = *it;
+            if (t->hasFrozenProblems()) {
+                char p = t->getSmallestFrozenProblem();
+                to_unfreeze.emplace_back(t, p);
+            }
+        }
 
-            // Search from bottom (reverse order) to find lowest ranked
+        // Process each unfreeze in order (lowest ranked first)
+        for (auto &[lowest_team, p] : to_unfreeze) {
+            if (!lowest_team->problems[p].frozen) {
+                continue; // already unfrozen
+            }
+
+            // Find old position
             int old_pos = 0;
-            for (auto it = current_ranking.rbegin(); it != current_ranking.rend(); ++it, ++old_pos) {
-                Team *t = *it;
-                if (t->hasFrozenProblems()) {
-                    lowest_team = t;
-                    found = true;
-                    // convert reverse iterator position to index
-                    old_pos = current_ranking.size() - 1 - old_pos;
+            for (; old_pos < (int)current_ranking.size(); old_pos++) {
+                if (current_ranking[old_pos] == lowest_team) {
                     break;
                 }
             }
-            if (!found) break;
-
-            char p = lowest_team->getSmallestFrozenProblem();
 
             ProblemState &ps = lowest_team->problems[p];
             ps.frozen = false;

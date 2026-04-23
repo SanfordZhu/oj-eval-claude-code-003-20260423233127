@@ -319,24 +319,36 @@ public:
         }
         recomputeRanking();
 
-        // Maintain a position array for quick lookup
+        // Build position map for quick lookup
         unordered_map<Team*, int> pos_map;
         for (int i = 0; i < (int)current_ranking.size(); i++) {
             pos_map[current_ranking[i]] = i;
         }
 
-        // Process one by one with full sort only when needed (after each unfreeze)
-        // Since there are at most 10 freezes and few frozen problems (scroll count is small), this is acceptable
+        // Process each unfreeze incrementally - no full sort after each step
+        // This is much faster than full recomputation
         for (auto &[team, p] : unfreeze_order) {
             int old_pos = pos_map[team];
-            team->problems[p].frozen = false;
-            recomputeRanking();
 
-            // Rebuild position map
-            for (int i = 0; i < (int)current_ranking.size(); i++) {
+            // Unfreeze this problem and recompute only this team's stats
+            team->problems[p].frozen = false;
+            team->computeRankingStats();
+
+            // Remove from current position
+            current_ranking.erase(current_ranking.begin() + old_pos);
+
+            // Find new position by comparing with other teams
+            int new_pos = 0;
+            while (new_pos < (int)current_ranking.size() && compareTeams(team, current_ranking[new_pos])) {
+                new_pos++;
+            }
+
+            current_ranking.insert(current_ranking.begin() + new_pos, team);
+
+            // Update position map
+            for (int i = new_pos; i < (int)current_ranking.size(); i++) {
                 pos_map[current_ranking[i]] = i;
             }
-            int new_pos = pos_map[team];
 
             if (new_pos != old_pos && new_pos < old_pos) {
                 Team *overtaken = current_ranking[new_pos];
@@ -344,7 +356,7 @@ public:
             }
         }
 
-        recomputeRanking();
+        ranking_dirty = false;
         output += scoreboardToString();
         is_frozen = false;
         return true;

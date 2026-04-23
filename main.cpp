@@ -264,25 +264,20 @@ public:
             Team *lowest_team = nullptr;
 
             // Search from bottom (reverse order) to find lowest ranked
-            for (auto it = current_ranking.rbegin(); it != current_ranking.rend(); ++it) {
+            int old_pos = 0;
+            for (auto it = current_ranking.rbegin(); it != current_ranking.rend(); ++it, ++old_pos) {
                 Team *t = *it;
                 if (t->hasFrozenProblems()) {
                     lowest_team = t;
                     found = true;
+                    // convert reverse iterator position to index
+                    old_pos = current_ranking.size() - 1 - old_pos;
                     break;
                 }
             }
             if (!found) break;
 
             char p = lowest_team->getSmallestFrozenProblem();
-
-            // Find old position by linear search
-            int old_pos = 0;
-            for (; old_pos < (int)current_ranking.size(); old_pos++) {
-                if (current_ranking[old_pos] == lowest_team) {
-                    break;
-                }
-            }
 
             ProblemState &ps = lowest_team->problems[p];
             ps.frozen = false;

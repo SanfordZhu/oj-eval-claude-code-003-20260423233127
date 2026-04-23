@@ -211,10 +211,12 @@ public:
                 ps.solved = true;
                 ps.solve_time = time;
                 if (!is_frozen || ps.solved_before_freeze) {
-                    // counts immediately
-                } else {
-                    // frozen - doesn't count yet
+                    // already solved before freeze - stays solved
+                    if (!ps.solved_before_freeze) {
+                        ps.solved_before_freeze = true;
+                    }
                 }
+                // else frozen - solved after freeze but doesn't count as solved_before_freeze yet
                 ranking_dirty = true;
             }
         } else {
@@ -222,7 +224,7 @@ public:
                 if (!is_frozen || ps.solved_before_freeze) {
                     ps.wrong_attempts_before++;
                 }
-                // else wrong attempts after freeze don't count toward before
+                // else wrong attempts after freeze are counted in submissions_after, added when unfrozen
                 ranking_dirty = true;
             }
         }
@@ -271,6 +273,16 @@ public:
 
         vector<pair<Team*, char>> unfreeze_order;
 
+        // Store original frozen state to restore when checking changes
+        vector<pair<Team*, bool>> original_frozen;
+        for (auto team : all_teams) {
+            for (auto &[p, state] : team->problems) {
+                if (state.frozen) {
+                    original_frozen.emplace_back(team, p);
+                }
+            }
+        }
+
         // Collect all frozen problems in order of scrolling
         while (true) {
             bool found = false;
@@ -289,65 +301,56 @@ public:
             unfreeze_order.emplace_back(lowest_team, p);
             ProblemState &ps = lowest_team->problems[p];
             ps.frozen = false;
-            if (ps.solved) {
-                if (!ps.solved_before_freeze) {
-                    ps.wrong_attempts_before += ps.submissions_after;
-                    ps.solved_before_freeze = true;
-                }
+            if (ps.solved && !ps.solved_before_freeze) {
+                ps.wrong_attempts_before += ps.submissions_after;
+                ps.solved_before_freeze = true;
             }
             recomputeRanking();
         }
 
-        // Now output ranking changes
-        recomputeRanking();
-        for (auto &[team, p] : unfreeze_order) {
-            // We need to output whenever unfreezing caused a ranking change
-            // For this problem, we just need to output each swap that happens
-            // But actually the spec says: output each unfreeze that causes ranking change
-            // We'll handle this by recomputing before and after each step and checking
-            // To keep it simple, let's redo the unfreezing step by step and detect changes
+        // Restore all to frozen to recompute incrementally and detect changes
+        for (auto team : all_teams) {
+            for (auto &[p, state] : team->problems) {
+                if (state.solved_before_freeze) {
+                    bool was_frozen = false;
+                    for (auto &[lt, lp] : unfreeze_order) {
+                        if (lt == team && lp == p) {
+                            was_frozen = true;
+                            break;
+                        }
+                    }
+                    if (was_frozen) {
+                        state.frozen = true;
+                    }
+                }
+            }
         }
-
-        // To correctly output ranking changes, we need to do this incrementally:
-        // Start from pre-scroll ranking, unfreeze one by one and output changes
-
-        // First, restore freeze state and recompute initial ranking
-        for (auto &[team, p] : unfreeze_order) {
-            team->problems[p].frozen = true;
-        }
         recomputeRanking();
-        vector<int> old_pos(all_teams.size());
+
+        // Create a position map for O(1) lookup
+        unordered_map<Team*, int> pos_map;
         for (int i = 0; i < (int)current_ranking.size(); i++) {
-            auto it = find_if(all_teams.begin(), all_teams.end(), [&](Team *t) { return t == current_ranking[i]; });
-            int idx = it - all_teams.begin();
-            old_pos[idx] = i;
+            pos_map[current_ranking[i]] = i;
         }
 
         for (auto &[team, p] : unfreeze_order) {
+            int old_pos = pos_map[team];
             team->problems[p].frozen = false;
             recomputeRanking();
 
-            vector<int> new_pos(all_teams.size());
+            // Rebuild position map
             for (int i = 0; i < (int)current_ranking.size(); i++) {
-                auto it = find_if(all_teams.begin(), all_teams.end(), [&](Team *t) { return t == current_ranking[i]; });
-                int idx = it - all_teams.begin();
-                new_pos[idx] = i;
+                pos_map[current_ranking[i]] = i;
             }
+            int new_pos = pos_map[team];
 
-            auto it_team = find_if(all_teams.begin(), all_teams.end(), [&](Team *t) { return t == team; });
-            int idx_team = it_team - all_teams.begin();
-            if (new_pos[idx_team] != old_pos[idx_team]) {
-                // Ranking changed - output the change
-                // Find the team that was overtaken
-                int new_rank = new_pos[idx_team] + 1;
-                int old_rank = old_pos[idx_team] + 1;
-                if (new_rank < old_rank) {
-                    Team *overtaken = current_ranking[new_rank - 1 + 1 - 1];
-                    output += team->name + " " + overtaken->name + " " + to_string(team->solved_count) + " " + to_string(team->total_penalty) + "\n";
-                }
+            if (new_pos != old_pos && new_pos < old_pos) {
+                // Ranking improved - output change for each overtaken team?
+                // According to spec: output one line per unfreeze that causes ranking change
+                // with team1 (unfrozen) that overtakes team2 (at new position+1)
+                Team *overtaken = current_ranking[new_pos];
+                output += team->name + " " + overtaken->name + " " + to_string(team->solved_count) + " " + to_string(team->total_penalty) + "\n";
             }
-
-            old_pos = new_pos;
         }
 
         recomputeRanking();
@@ -406,24 +409,11 @@ public:
             team->computeRankingStats();
         }
         current_ranking.clear();
+        current_ranking.reserve(all_teams.size());
         for (auto team : all_teams) {
             current_ranking.push_back(team);
         }
-        if (current_ranking.empty()) {
-            ranking_dirty = false;
-            return;
-        }
-        // Before any flush, sort by name
-        if (ranking_dirty || !competition_started) {
-            sort(current_ranking.begin(), current_ranking.end(), [](Team *a, Team *b) {
-                return a->name < b->name;
-            });
-        } else {
-            sort(current_ranking.begin(), current_ranking.end(), compareTeams);
-        }
-        if (competition_started) {
-            sort(current_ranking.begin(), current_ranking.end(), compareTeams);
-        }
+        sort(current_ranking.begin(), current_ranking.end(), compareTeams);
         ranking_dirty = false;
     }
 
@@ -522,43 +512,57 @@ int main() {
             system.queryRanking(team_name, output);
             cout << output;
         } else if (cmd == "QUERY_SUBMISSION") {
-            string team_name, where, problem_part, problem_val, and_token, status_val;
-            cin >> team_name >> where >> problem_part >> problem_val >> and_token >> status_val;
-            // problem_val is like "PROBLEM=A" or "PROBLEM=ALL" - the last token is actually the value
-            // when parsing with cin, we got problem_val as "A" or "ALL" because it splits on =
-            // Wait, actually input is "QUERY_SUBMISSION Team_Rocket WHERE PROBLEM=ALL AND STATUS=ALL"
-            // With cin whitespace split, this could be:
-            // team_name = Team_Rocket
-            // where = WHERE
-            // problem_part = PROBLEM=ALL
-            // and_token = AND
-            // status_val = STATUS=ALL
-            // OR if the = is split:
-            // team_name = Team_Rocket
-            // where = WHERE
-            // problem_part = PROBLEM=
-            // problem_val = ALL
-            // and_token = AND
-            // status_val = STATUS=
-            // status_val2 = ALL
-            // Let me handle both cases
+            string team_name;
+            cin >> team_name;
+            // Read the rest of the line to parse correctly
+            string rest;
+            string line;
+            cin.ignore();
+            getline(cin, line);
+            // Parse PROBLEM=... and STATUS=...
             string problem_filter, status_filter;
-            size_t eq;
-            if (problem_part.find('=') != string::npos) {
-                eq = problem_part.find('=');
-                problem_filter = problem_part.substr(eq + 1);
-                if (problem_filter.empty()) {
-                    problem_filter = problem_val;
+            size_t problem_pos = line.find("PROBLEM=");
+            size_t status_pos = line.find("STATUS=");
+            if (problem_pos != string::npos) {
+                problem_pos += 8;
+                size_t end_problem = line.find(' ', problem_pos);
+                if (end_problem == string::npos) {
+                    problem_filter = line.substr(problem_pos);
+                } else {
+                    problem_filter = line.substr(problem_pos, end_problem - problem_pos);
                 }
-            } else {
-                problem_filter = problem_val;
             }
-            if (status_val.find('=') != string::npos) {
-                eq = status_val.find('=');
-                status_filter = status_val.substr(eq + 1);
-            } else {
-                // should not happen with input format
-                status_filter = status_val;
+            if (status_pos != string::npos) {
+                status_pos += 7;
+                status_filter = line.substr(status_pos);
+                size_t end_status = status_filter.find(' ');
+                if (end_status != string::npos) {
+                    status_filter = status_filter.substr(0, end_status);
+                }
+            }
+            if (problem_filter == "ALL" && status_filter.empty()) {
+                // Sometimes order reversed
+                problem_filter.clear();
+                status_filter.clear();
+                size_t status_pos2 = line.find("STATUS=");
+                size_t problem_pos2 = line.find("PROBLEM=");
+                if (status_pos2 != string::npos) {
+                    status_pos2 += 7;
+                    size_t end_status = line.find(' ', status_pos2);
+                    if (end_status == string::npos) {
+                        status_filter = line.substr(status_pos2);
+                    } else {
+                        status_filter = line.substr(status_pos2, end_status - status_pos2);
+                    }
+                }
+                if (problem_pos2 != string::npos) {
+                    problem_pos2 += 8;
+                    problem_filter = line.substr(problem_pos2);
+                    size_t end_problem = problem_filter.find(' ');
+                    if (end_problem != string::npos) {
+                        problem_filter = problem_filter.substr(0, end_problem);
+                    }
+                }
             }
             string output;
             system.querySubmission(team_name, problem_filter, status_filter, output);

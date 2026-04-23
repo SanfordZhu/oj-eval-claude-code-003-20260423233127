@@ -250,8 +250,11 @@ public:
                 if (state.solved && state.countsForRanking()) {
                     state.solved_before_freeze = true;
                 }
-                if (!state.solved_before_freeze && state.submissions_after > 0) {
-                    state.frozen = true;
+                // Any problem unsolved before freeze that has at least one submission after freeze gets frozen
+                // We are just starting freeze, so any existing submissions_after are zero yet
+                // The rule: problems unsolved before freeze that get submissions after freeze enter frozen state
+                if (!state.solved_before_freeze) {
+                    state.submissions_after = 0;
                 }
             }
         }
@@ -273,17 +276,16 @@ public:
 
         vector<pair<Team*, char>> unfreeze_order;
 
-        // Store original frozen state to restore when checking changes
-        vector<pair<Team*, bool>> original_frozen;
-        for (auto team : all_teams) {
+        // Collect all frozen problems in order of scrolling first
+        vector<vector<bool>> was_frozen(all_teams.size());
+        for (int i = 0; i < (int)all_teams.size(); i++) {
+            Team *team = all_teams[i];
             for (auto &[p, state] : team->problems) {
-                if (state.frozen) {
-                    original_frozen.emplace_back(team, p);
-                }
+                was_frozen[i].push_back(state.frozen);
             }
         }
 
-        // Collect all frozen problems in order of scrolling
+        // Collect all frozen problems in the order we'll unfreeze them
         while (true) {
             bool found = false;
             Team *lowest_team = nullptr;
@@ -305,34 +307,26 @@ public:
                 ps.wrong_attempts_before += ps.submissions_after;
                 ps.solved_before_freeze = true;
             }
-            recomputeRanking();
         }
 
-        // Restore all to frozen to recompute incrementally and detect changes
-        for (auto team : all_teams) {
+        // Now restore everything to frozen to do incremental changes
+        for (int i = 0; i < (int)all_teams.size(); i++) {
+            Team *team = all_teams[i];
+            int j = 0;
             for (auto &[p, state] : team->problems) {
-                if (state.solved_before_freeze) {
-                    bool was_frozen = false;
-                    for (auto &[lt, lp] : unfreeze_order) {
-                        if (lt == team && lp == p) {
-                            was_frozen = true;
-                            break;
-                        }
-                    }
-                    if (was_frozen) {
-                        state.frozen = true;
-                    }
-                }
+                state.frozen = was_frozen[i][j++];
             }
         }
         recomputeRanking();
 
-        // Create a position map for O(1) lookup
+        // Maintain a position array for quick lookup
         unordered_map<Team*, int> pos_map;
         for (int i = 0; i < (int)current_ranking.size(); i++) {
             pos_map[current_ranking[i]] = i;
         }
 
+        // Process one by one with full sort only when needed (after each unfreeze)
+        // Since there are at most 10 freezes and few frozen problems (scroll count is small), this is acceptable
         for (auto &[team, p] : unfreeze_order) {
             int old_pos = pos_map[team];
             team->problems[p].frozen = false;
@@ -345,9 +339,6 @@ public:
             int new_pos = pos_map[team];
 
             if (new_pos != old_pos && new_pos < old_pos) {
-                // Ranking improved - output change for each overtaken team?
-                // According to spec: output one line per unfreeze that causes ranking change
-                // with team1 (unfrozen) that overtakes team2 (at new position+1)
                 Team *overtaken = current_ranking[new_pos];
                 output += team->name + " " + overtaken->name + " " + to_string(team->solved_count) + " " + to_string(team->total_penalty) + "\n";
             }

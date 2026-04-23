@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <list>
 
 using namespace std;
 
@@ -129,17 +130,14 @@ private:
     int duration_time;
     int problem_count;
     unordered_map<string, Team*> teams_map;
-    vector<Team*> all_teams;
-    vector<Team*> current_ranking;
-    vector<Submission> all_submissions;
-    bool ranking_dirty = true;
+    list<Team*> current_ranking;
 
 public:
     ICPCSystem() : duration_time(0), problem_count(0) {}
 
     ~ICPCSystem() {
-        for (auto team : all_teams) {
-            delete team;
+        for (auto team : teams_map) {
+            delete team.second;
         }
     }
 
@@ -154,8 +152,8 @@ public:
         }
         Team *team = new Team(name);
         teams_map[name] = team;
-        all_teams.push_back(team);
-        ranking_dirty = true;
+        current_ranking.push_back(team);
+        sortCurrentRanking();
         output = "[Info]Add successfully.\n";
         return true;
     }
@@ -170,11 +168,11 @@ public:
         problem_count = problems;
         for (int i = 0; i < problem_count; i++) {
             char p = 'A' + i;
-            for (auto team : all_teams) {
+            for (auto &[name, team] : teams_map) {
                 team->addProblem(p);
             }
         }
-        ranking_dirty = true;
+        sortCurrentRanking();
         output = "[Info]Competition starts.\n";
         return true;
     }
@@ -183,7 +181,6 @@ public:
         Team *team = teams_map[team_name];
         Submission sub(problem, status, time);
         team->submissions.push_back(sub);
-        all_submissions.push_back(sub);
 
         ProblemState &ps = team->problems[problem];
 
@@ -203,14 +200,12 @@ public:
                         ps.solved_before_freeze = true;
                     }
                 }
-                ranking_dirty = true;
             }
         } else {
             if (!ps.solved) {
                 if (!is_frozen || ps.solved_before_freeze) {
                     ps.wrong_attempts_before++;
                 }
-                ranking_dirty = true;
             }
         }
 
@@ -220,7 +215,7 @@ public:
     }
 
     void flush(string &output) {
-        recomputeRanking();
+        sortCurrentRanking();
         output = "[Info]Flush scoreboard.\n";
     }
 
@@ -230,7 +225,7 @@ public:
             return false;
         }
         is_frozen = true;
-        for (auto team : all_teams) {
+        for (auto &[name, team] : teams_map) {
             for (auto &[p, state] : team->problems) {
                 if (state.solved && state.countsForRanking()) {
                     state.solved_before_freeze = true;
@@ -241,7 +236,6 @@ public:
             }
         }
         output = "[Info]Freeze scoreboard.\n";
-        ranking_dirty = true;
         return true;
     }
 
@@ -256,79 +250,64 @@ public:
         recomputeRanking();
         output += scoreboardToString();
 
-        // Collect all frozen problems grouped by team, ordered from lowest ranked to highest ranked (reverse of current ranking)
-        // This way we get lowest ranked first as required by problem statement
-        vector<pair<Team*, char>> to_unfreeze;
-        for (auto it = current_ranking.rbegin(); it != current_ranking.rend(); ++it) {
-            Team *t = *it;
-            if (t->hasFrozenProblems()) {
-                char p = t->getSmallestFrozenProblem();
-                to_unfreeze.emplace_back(t, p);
-            }
-        }
+        // We need to repeatedly:
+        // 1. Find lowest-ranked team that has frozen problems (search from bottom up)
+        // 2. Unfreeze its smallest frozen problem
+        // 3. Update ranking
+        // 4. Output any ranking change that happened
+        // Repeat until no frozen problems left.
+        // Using linked list to make insertion/deletion more efficient
 
-        // Process each unfreeze in order (lowest ranked first)
-        for (auto &[lowest_team, p] : to_unfreeze) {
-            if (!lowest_team->problems[p].frozen) {
-                continue; // already unfrozen
-            }
-
-            // Find old position
-            int old_pos = 0;
-            for (; old_pos < (int)current_ranking.size(); old_pos++) {
-                if (current_ranking[old_pos] == lowest_team) {
+        while (true) {
+            // Search from the end backwards for the first team with frozen problems
+            list<Team*>::reverse_iterator it;
+            bool found = false;
+            Team *lowest_team = nullptr;
+            for (it = current_ranking.rbegin(); it != current_ranking.rend(); ++it) {
+                Team *t = *it;
+                if (t->hasFrozenProblems()) {
+                    lowest_team = t;
+                    found = true;
                     break;
                 }
             }
+            if (!found) break;
 
+            char p = lowest_team->getSmallestFrozenProblem();
             ProblemState &ps = lowest_team->problems[p];
+
+            // We need to remove and reinsert because the sorted order changed
+            // Erase from current position (list is ordered)
+            auto node_it = find_it(lowest_team);
+            current_ranking.erase(node_it);
+
             ps.frozen = false;
             if (ps.solved && !ps.solved_before_freeze) {
                 ps.wrong_attempts_before += ps.submissions_after;
                 ps.solved_before_freeze = true;
             }
 
-            // Recompute this team's stats after unfreezing
             lowest_team->computeRankingStats();
 
-            // Remove from old position
-            current_ranking.erase(current_ranking.begin() + old_pos);
-
-            // Find new position using binary search since current list is sorted
-            // compareTeams(a,b) is true if a should come before b (a ranks higher than b)
-            int left = 0, right = current_ranking.size();
-            while (left < right) {
-                int mid = (left + right) / 2;
-                if (compareTeams(lowest_team, current_ranking[mid])) {
-                    // lowest ranks higher than mid, so it should go before mid
-                    right = mid;
-                } else {
-                    // lowest does not rank higher than mid, so it should go after mid
-                    left = mid + 1;
-                }
-            }
-            int new_pos = left;
-
-            // If we moved up, the overtaken team is at new_pos before insertion
+            // Find new position in sorted list and insert
+            auto insert_pos = find_insert_position(lowest_team);
             Team *overtaken = nullptr;
-            bool output_change = (new_pos != old_pos && new_pos < old_pos && new_pos < (int)current_ranking.size());
+            int old_pos = 0; // unused for list
+            bool output_change = (insert_pos != current_ranking.end());
             if (output_change) {
-                overtaken = current_ranking[new_pos];
+                overtaken = *insert_pos;
             }
 
-            // Insert at new position
-            current_ranking.insert(current_ranking.begin() + new_pos, lowest_team);
+            current_ranking.insert(insert_pos, lowest_team);
 
-            // Output the change if ranking improved
+            // Output if ranking changed (team moved up)
             if (output_change) {
                 output += lowest_team->name + " " + overtaken->name + " " + to_string(lowest_team->solved_count) + " " + to_string(lowest_team->total_penalty) + "\n";
             }
         }
 
-        // Output final scoreboard
-        ranking_dirty = false;
-        output += scoreboardToString();
         is_frozen = false;
+        output += scoreboardToString();
         return true;
     }
 
@@ -341,11 +320,10 @@ public:
         if (is_frozen) {
             output += "[Warning]Scoreboard is frozen. The ranking may be inaccurate until it were scrolled.\n";
         }
-        recomputeRankingIfNeeded();
         int rank = 0;
-        for (int i = 0; i < (int)current_ranking.size(); i++) {
-            if (current_ranking[i]->name == team_name) {
-                rank = i + 1;
+        for (auto t : current_ranking) {
+            rank++;
+            if (t->name == team_name) {
                 break;
             }
         }
@@ -377,23 +355,33 @@ public:
         output = "[Info]Competition ends.\n";
     }
 
-    void recomputeRanking() {
-        for (auto team : all_teams) {
-            team->computeRankingStats();
-        }
-        current_ranking.clear();
-        current_ranking.reserve(all_teams.size());
-        for (auto team : all_teams) {
-            current_ranking.push_back(team);
-        }
-        sort(current_ranking.begin(), current_ranking.end(), compareTeams);
-        ranking_dirty = false;
+    void sortCurrentRanking() {
+        current_ranking.sort(compareTeams);
     }
 
-    void recomputeRankingIfNeeded() {
-        if (ranking_dirty) {
-            recomputeRanking();
+    void recomputeRanking() {
+        for (auto team : current_ranking) {
+            team->computeRankingStats();
         }
+        current_ranking.sort(compareTeams);
+    }
+
+    list<Team*>::iterator find_it(Team *team) {
+        for (auto it = current_ranking.begin(); it != current_ranking.end(); ++it) {
+            if (*it == team) {
+                return it;
+            }
+        }
+        return current_ranking.end();
+    }
+
+    list<Team*>::iterator find_insert_position(Team *team) {
+        for (auto it = current_ranking.begin(); it != current_ranking.end(); ++it) {
+            if (!compareTeams(team, *it)) {
+                return it;
+            }
+        }
+        return current_ranking.end();
     }
 
     string scoreboardToString() const {
@@ -505,28 +493,10 @@ int main() {
             }
             if (status_pos != string::npos) {
                 status_pos += 7;
-                size_t end_status = line.find(' ', status_pos);
-                if (end_status == string::npos) {
-                    status_filter = line.substr(status_pos);
-                } else {
-                    status_filter = line.substr(status_pos, end_status - status_pos);
-                }
-            }
-            if (problem_filter.empty() || status_filter.empty()) {
-                if (problem_filter.empty() && problem_pos != string::npos) {
-                    // handle case where split differently
-                }
-            }
-            if (problem_filter == "ALL" && status_filter.empty()) {
-                size_t status_pos2 = line.find("STATUS=");
-                if (status_pos2 != string::npos) {
-                    status_pos2 += 7;
-                    size_t end_status = line.find(' ', status_pos2);
-                    if (end_status == string::npos) {
-                        status_filter = line.substr(status_pos2);
-                    } else {
-                        status_filter = line.substr(status_pos2, end_status - status_pos2);
-                    }
+                status_filter = line.substr(status_pos);
+                size_t end_status = status_filter.find(' ');
+                if (end_status != string::npos) {
+                    status_filter = status_filter.substr(0, end_status);
                 }
             }
             string output;
